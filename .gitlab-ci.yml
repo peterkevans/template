@@ -1,0 +1,66 @@
+stages:
+  - fetch-version
+  - release-and-deploy
+
+# General variables configurations
+variables:
+  PROJECT_ID: operations-221922
+  GITLAB_GCP_ACCOUNT: "gitlab-ci@${PROJECT_ID}.iam.gserviceaccount.com"
+  GITLAB_KEY: $GITLAB_CI_SA
+
+before_script:
+  - echo "$GITLAB_KEY" > keys.json
+  - export GIT_COMMIT=$(git rev-parse HEAD)
+  - |
+      gcloud auth activate-service-account $GITLAB_GCP_ACCOUNT --key-file=keys.json && \
+      gcloud config set project $PROJECT_ID
+
+fetch-semantic-version:
+  image: node:14
+  stage: fetch-version
+  only:
+    refs:
+      - master
+      - develop
+  script:
+    - openssl s_client -showcerts -servername gitlab.microba.internal -connect gitlab.microba.internal:443 </dev/null 2>/dev/null | sed -n -e '/BEGIN\ CERTIFICATE/,/END\ CERTIFICATE/ p' > gitlab.microba.internal.pem
+    - cat gitlab.microba.internal.pem | tee -a /etc/ssl/certs/ca-certificates.crt
+    - npm install @semantic-release/git @semantic-release/changelog @semantic-release/exec @saithodev/semantic-release-backmerge
+    - npx semantic-release --generate-notes false --dry-run
+    - cat VERSION.txt
+    - VERSION=`echo $(cat VERSION.txt)`
+  artifacts:
+    paths:
+    - VERSION.txt
+
+release-and-deploy:
+  image: node:14
+  stage: release-and-deploy
+  only:
+    refs:
+    - master
+    - develop
+  script:
+    - cat VERSION.txt
+    - VERSION=`echo $(cat VERSION.txt)`
+    # Version replacement Command 
+    - |-
+        ENV=${CI_COMMIT_BRANCH}
+        if [[ "${CI_COMMIT_BRANCH}" == "master" ]]; then
+          ENV="production" 
+          cat "./src/${CI_PROJECT_NAME}.yaml" | sed "s/__VERSION__/${VERSION}/g" > "./deployment/develop/${CI_PROJECT_NAME}-${VERSION}.yaml"
+        fi
+    - cat "./src/${CI_PROJECT_NAME}.yaml" | sed "s/__VERSION__/${VERSION}/g" > "./deployment/${ENV}/${CI_PROJECT_NAME}-${VERSION}.yaml"
+    - cat "./deployment/${ENV}/${CI_PROJECT_NAME}-${VERSION}.yaml"
+    
+    - openssl s_client -showcerts -servername gitlab.microba.internal -connect gitlab.microba.internal:443 </dev/null 2>/dev/null | sed -n -e '/BEGIN\ CERTIFICATE/,/END\ CERTIFICATE/ p' > gitlab.microba.internal.pem
+    - cat gitlab.microba.internal.pem | tee -a /etc/ssl/certs/ca-certificates.crt
+    - npm install @semantic-release/git @semantic-release/changelog @semantic-release/exec @saithodev/semantic-release-backmerge
+    - npx semantic-release
+    - ls -la
+    - git status
+    - ls -la deployment/develop/ 
+    - ls -la deployment/production/ 
+  artifacts:
+    paths:
+      - VERSION.txt
